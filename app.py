@@ -8,6 +8,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from scipy.optimize import minimize
 from sklearn.linear_model import LinearRegression
+from pypfopt.black_litterman import BlackLittermanModel
 
 st.set_page_config(layout="wide")
 
@@ -67,6 +68,8 @@ if "aplicar_btn" in st.session_state:
         precios_sp500_df = MCF.obtener_datos(["^GSPC"], start=fecha_inicial, end=fecha_final)
         precios_sp500_df.rename(columns={"^GSPC":"SP500"}, inplace=True)
         rendimientos_sp500_df = MCF.calcular_rendimientos(precios_sp500_df)
+
+        pesos_df = None
         
         if TIPO_ANALISIS == "Manual":
             st.subheader('Definición del Portafolio')
@@ -82,8 +85,8 @@ if "aplicar_btn" in st.session_state:
         elif TIPO_ANALISIS == "Mean-Variance":
             st.subheader('Definición del Portafolio')
 
-            rendimientos_promedio = rendimientos_df.mean()
-            cov_mat = rendimientos_df.cov()
+            rendimientos_promedio = rendimientos_df.mean() * 252
+            cov_mat = rendimientos_df.cov() * 252
 
             portfolio_return = lambda x: x @ rendimientos_promedio.values
             portfolio_variance = lambda x: (x.reshape(-1,1).T @ cov_mat.values @ x.reshape(-1,1)).item()
@@ -98,7 +101,7 @@ if "aplicar_btn" in st.session_state:
             x = np.array([1/len(rendimientos_promedio.values)]*len(rendimientos_promedio.values))
             bounds = [(0, 1) for _ in range(len(rendimientos_promedio.values))]
             if tipo_optimizacion == "Markowitz":
-                target_return = st.number_input("Rendimiento Objetivo", value=0.001, format="%0.4f", step=0.0001)
+                target_return = st.number_input("Rendimiento Objetivo (Anual)", value=0.1, format="%0.4f", step=0.05)
                 constraints = [{"type":"eq", "fun":lambda x: portfolio_return(x) - target_return},
                                {"type":"eq", "fun":lambda x: sum(x) - 1}]
                 fun = portfolio_variance
@@ -192,7 +195,8 @@ if "aplicar_btn" in st.session_state:
                         st.markdown("#####")
                         view_data["Rendimiento"] = st.number_input(
                             "Rendimiento", 
-                            value=0.05, 
+                            value=(view_data["Rendimiento"] if view_data["Rendimiento"] != None else None) \
+                                  if "Rendimiento" in view_data else 0.05, 
                             format="%0.2f", 
                             step=0.05,
                             key=f"View_Rendimiento_{i}"
@@ -212,7 +216,8 @@ if "aplicar_btn" in st.session_state:
                             "Outperformers:",
                             UNIVERSO_INVERTIBLE,
                             key=f"View_Overperformers_{i}",
-                            default=None,
+                            default=(view_data["Outperformers"] if view_data["Outperformers"] != None else None) \
+                                    if "Outperformers" in view_data else None, 
                         )
 
                     with col2:
@@ -221,14 +226,16 @@ if "aplicar_btn" in st.session_state:
                             "Underperformers:",
                             UNIVERSO_INVERTIBLE,
                             key=f"View_Underperformers_{i}",
-                            default=None,
+                            default=(view_data["Underperformers"] if view_data["Underperformers"] != None else None) \
+                                    if "Underperformers" in view_data else None, 
                         )
                     
                     with col3:
                         st.markdown("#####")
                         view_data["Rendimiento"] = st.number_input(
                             "Rendimiento", 
-                            value=0.05, 
+                            value=(view_data["Rendimiento"] if view_data["Rendimiento"] != None else None) \
+                                  if "Rendimiento" in view_data else 0.05,  
                             format="%0.2f", 
                             step=0.05,
                             key=f"View_Rendimiento_{i}"
@@ -242,10 +249,12 @@ if "aplicar_btn" in st.session_state:
 
 
             # st.write(st.session_state["views"])
+            views_vector = []
             picking_mtx = []
             for i in st.session_state["views"]["views_idx"]:
                 view_data = st.session_state["views"][i]
                 picking_mtx_row = [0]*len(UNIVERSO_INVERTIBLE)
+                views_vector.append(view_data["Rendimiento"])
 
                 if view_data["Tipo"] == "Absoluto":
                     if view_data["Activo"] != None:
@@ -269,116 +278,193 @@ if "aplicar_btn" in st.session_state:
 
                 picking_mtx.append(picking_mtx_row)
 
+            views_vector = np.array(views_vector).reshape(-1, 1)
+            picking_mtx = np.array(picking_mtx)
+            cov_mtx = rendimientos_df[UNIVERSO_INVERTIBLE].cov() * 252
+            market_caps = pesos_bmk_df["Peso (%)"].set_axis(UNIVERSO_INVERTIBLE)
+
             st.subheader("Picking Matrix")
-            st.write(np.array(picking_mtx))
+            st.write(picking_mtx)
 
-        # rendimientos_port_df = rendimientos_df[UNIVERSO_INVERTIBLE].values @ pesos_df.loc[UNIVERSO_INVERTIBLE, "Peso (%)"].values.reshape(-1,1)
-        # rendimientos_port_df = rendimientos_port_df.flatten()
-        # rendimientos_port_df = pd.DataFrame({"Rendimiento Portafolio":rendimientos_port_df})
-        # rendimientos_port_df.index = rendimientos_df.index.copy()
+            col1, col2, col3 = st.columns([1,1,1])
 
-        # valor_port_df = rendimientos_port_df.copy()
-        # valor_port_df.loc[precios_df.iloc[0].name, "Rendimiento Portafolio"] = 0
-        # valor_port_df.sort_index(inplace=True)
-        # valor_port_df += 1
-        # valor_port_df = valor_port_df.cumprod()
-        # valor_port_df.rename(columns={"Rendimiento Portafolio":"Valor Portafolio"}, inplace=True)
+            if "black_litterman_exe" not in st.session_state:
+                st.session_state["black_litterman_exe"] = False
 
-        # drawdowns_df = (valor_port_df["Valor Portafolio"].cummax() - valor_port_df["Valor Portafolio"])/valor_port_df["Valor Portafolio"].cummax()
-        # drawdowns_df = drawdowns_df.to_frame()
-        # drawdowns_df.rename(columns={"Valor Portafolio":"Drawdown"}, inplace=True)
-        
-        # st.subheader('Análisis del Portafolio', divider="red")
-        # temp_fig = px.line(valor_port_df, x=valor_port_df.index, y="Valor Portafolio")
-        # temp_fig.update_traces(line_color="red")
+            with col2:
+                col1, col2 = st.columns([0.5, 0.5])
 
-        # backtesting_fig = make_subplots(
-        #     rows=2, cols=1,
-        #     shared_xaxes=True,
-        #     row_heights=[0.8, 0.2],
-        #     vertical_spacing=0.00
-        # )
+                if col1.button("Ejecutar", width="stretch"):
+                    st.session_state["black_litterman_exe"] = True
+                if col2.button("Reset", width="stretch"):
+                    st.session_state["black_litterman_exe"] = False
 
-        # for trace in temp_fig.data:
-        #     backtesting_fig.add_trace(trace, row=1, col=1)
+            if st.session_state["black_litterman_exe"]:
+                bl = BlackLittermanModel(
+                    cov_matrix=cov_mtx,
+                    pi="market",
+                    Q=views_vector,
+                    P=picking_mtx,
+                    market_caps=market_caps
+                )
 
-        # backtesting_fig.add_trace(
-        #     go.Scatter(
-        #         x=drawdowns_df.index,
-        #         y=drawdowns_df["Drawdown"],
-        #         line=dict(color="white"),
-        #         name="Drawdown",
-        #         fill="tozeroy",
-        #         fillcolor="rgba(255,255,255,0.2)",
-        #         showlegend=True
-        #     ),
-        #     row=2, col=1
-        # )
+                cov_mat = bl.bl_cov().copy()
+                rendimientos_promedio = bl.bl_returns().copy()
 
-        # backtesting_fig.update_xaxes(showticklabels=False, row=1, col=1)
-        # backtesting_fig.update_xaxes(
-        #     tickfont=dict(size=26), showline=True, linecolor="white", linewidth=2, gridcolor='rgba(255,255,255,0.2)', mirror=True
-        # )
-        # backtesting_fig.update_yaxes(
-        #     tickfont=dict(size=26), showline=True, linecolor="white", linewidth=2, gridcolor='rgba(255,255,255,0.2)', mirror=True
-        # )
-        # backtesting_fig.update_yaxes(tickformat=".0%", row=2, col=1)
-        # backtesting_fig.update_layout(
-        #     margin=dict(t=50, b=35, l=70, r=2), plot_bgcolor="rgba(0,0,0,0)", height=800, title="Valor del Portafolio y Drawdown",
-        #     legend=dict(x=0.99, y=0.20, xanchor="right", yanchor="top", bgcolor="rgba(0,0,0,0)", font=dict(size=20, color="white"))
-        # )
-        # st.plotly_chart(backtesting_fig, theme=None)
+                portfolio_return = lambda x: x @ rendimientos_promedio.values
+                portfolio_variance = lambda x: (x.reshape(-1,1).T @ cov_mat.values @ x.reshape(-1,1)).item()
+                portfolio_volatility = lambda x: portfolio_variance(x)**(1/2)
+                portfolio_sharpe = lambda x: portfolio_return(x)/portfolio_volatility(x)
 
-        # cols = st.columns([0.4, 0.06, 0.18, 0.18, 0.18])
+                # st.write(bl.bl_cov())
 
-        # rendimientos_fig = px.histogram(rendimientos_port_df, x="Rendimiento Portafolio")
-        # rendimientos_fig.update_traces(marker_line_width=2, marker_line_color="red", marker_color="rgba(255,0,0,0.2)")
-        # rendimientos_fig.update_yaxes(
-        #     title=None, showticklabels=False, linecolor="white", linewidth=2, gridcolor='rgba(255,255,255,0.2)', mirror=True
-        # )
-        # rendimientos_fig.update_xaxes(
-        #     title=None, tickfont=dict(size=26), showline=True, linecolor="white", linewidth=2, gridcolor='rgba(255,255,255,0.2)', mirror=True
-        # )
-        # rendimientos_fig.update_layout(
-        #     margin=dict(t=50, b=35, l=70, r=2), plot_bgcolor="rgba(0,0,0,0)", title="Rendimientos Diarios Portafolio", height=525
-        # )
+                # st.write(rendimientos_df.cov() * 252)
 
-        # cols[0].markdown("######")
-        # cols[0].plotly_chart(rendimientos_fig, theme=None)
+                # st.write(bl.bl_returns())
 
-        # metricas_portafolio_dict = {}
+                # st.write(rendimientos_df[UNIVERSO_INVERTIBLE].mean() * 252)
 
-        # rendimientos_vs_sp500_df = pd.merge(rendimientos_port_df, rendimientos_sp500_df, left_index=True, right_index=True, how="left")
-        # X = rendimientos_vs_sp500_df[["SP500"]].values
-        # y = rendimientos_vs_sp500_df["Rendimiento Portafolio"]
-        # reg = LinearRegression().fit(X, y)
+                tipo_optimizacion = st.selectbox(
+                    "Seleccione el tipo de optimización que desea realizar:",
+                    ("Min Variance", "Max Sharpe", "Markowitz"),
+                )
 
-        # metricas_portafolio_dict["BETA"] = reg.coef_
-        # metricas_portafolio_dict["Media"] = rendimientos_port_df["Rendimiento Portafolio"].mean()
-        # metricas_portafolio_dict["Volatilidad"] = rendimientos_port_df["Rendimiento Portafolio"].std()
-        # metricas_portafolio_dict["Max Drawdown"] = drawdowns_df["Drawdown"].max()
-        # metricas_portafolio_dict["Kurtosis"] = rendimientos_port_df["Rendimiento Portafolio"].kurtosis()
-        # metricas_portafolio_dict["Sesgo"] = rendimientos_port_df["Rendimiento Portafolio"].skew()
-        # metricas_portafolio_dict["VaR_95"] = rendimientos_port_df["Rendimiento Portafolio"].quantile(0.05)
-        # metricas_portafolio_dict["cVaR_95"] = rendimientos_port_df["Rendimiento Portafolio"][rendimientos_port_df["Rendimiento Portafolio"] <= \
-        #                                       metricas_portafolio_dict["VaR_95"]].mean()
-        # metricas_portafolio_dict["Sharpe"] = metricas_portafolio_dict["Media"]/metricas_portafolio_dict["Volatilidad"]
-        # metricas_portafolio_dict["Sortino"] = metricas_portafolio_dict["Media"] / \
-        #                                       rendimientos_port_df["Rendimiento Portafolio"][rendimientos_port_df["Rendimiento Portafolio"] <= 0].std()
+                x = np.array([1/len(rendimientos_promedio.values)]*len(rendimientos_promedio.values))
+                bounds = [(0, 1) for _ in range(len(rendimientos_promedio.values))]
+                if tipo_optimizacion == "Markowitz":
+                    target_return = st.number_input("Rendimiento Objetivo (Anual)", value=0.1, format="%0.4f", step=0.05)
+                    constraints = [{"type":"eq", "fun":lambda x: portfolio_return(x) - target_return},
+                                {"type":"eq", "fun":lambda x: sum(x) - 1}]
+                    fun = portfolio_variance
+                elif tipo_optimizacion == "Max Sharpe":
+                    constraints = [{"type":"eq", "fun":lambda x: sum(x) - 1}]
+                    fun = lambda x: -portfolio_sharpe(x)
+                elif tipo_optimizacion == "Min Variance":
+                    constraints = [{"type":"eq", "fun":lambda x: sum(x) - 1}]
+                    fun = portfolio_variance
 
-        # for i in range(2, 5):
-        #     if i != 3:
-        #         cols[i].markdown('#')
-        #         cols[i].markdown('##')
-        #         cols[i].markdown("#")
-        #     else:
-        #         cols[i].markdown("#")
-        #         cols[i].metric("BETA", np.round(metricas_portafolio_dict["BETA"], decimals=2), border=True, width="content")
-        #         cols[i].markdown("######")
+                res = minimize(
+                    fun=fun, x0=x, constraints=constraints, method="SLSQP", bounds=bounds, 
+                    options={"ftol":1e-12, "maxiter":2000, "eps":1e-12, "disp":False}
+                )
+                pesos_df = pd.DataFrame({"Activo":rendimientos_promedio.index.copy(), "Peso (%)":res.x})
 
-        # for i, key in enumerate(metricas_portafolio_dict):
-        #     if key != "BETA":
-        #         cols[(i - 1) % 3 + 2].metric(key, np.round(metricas_portafolio_dict[key], decimals=4))
+                st.dataframe(
+                    pesos_df, hide_index=True,
+                    column_config={
+                        "Peso (%)": st.column_config.NumberColumn(format="percent", min_value=0, max_value=1)
+                    }
+                )
+                pesos_df.set_index("Activo", inplace=True)
+
+        if isinstance(pesos_df, pd.DataFrame):
+            rendimientos_port_df = rendimientos_df[UNIVERSO_INVERTIBLE].values @ pesos_df.loc[UNIVERSO_INVERTIBLE, "Peso (%)"].values.reshape(-1,1) 
+            rendimientos_port_df = rendimientos_port_df.flatten()
+            rendimientos_port_df = pd.DataFrame({"Rendimiento Portafolio":rendimientos_port_df})
+            rendimientos_port_df.index = rendimientos_df.index.copy()
+
+            valor_port_df = rendimientos_port_df.copy()
+            valor_port_df.loc[precios_df.iloc[0].name, "Rendimiento Portafolio"] = 0
+            valor_port_df.sort_index(inplace=True)
+            valor_port_df += 1
+            valor_port_df = valor_port_df.cumprod()
+            valor_port_df.rename(columns={"Rendimiento Portafolio":"Valor Portafolio"}, inplace=True)
+
+            drawdowns_df = (valor_port_df["Valor Portafolio"].cummax() - valor_port_df["Valor Portafolio"])/valor_port_df["Valor Portafolio"].cummax()
+            drawdowns_df = drawdowns_df.to_frame()
+            drawdowns_df.rename(columns={"Valor Portafolio":"Drawdown"}, inplace=True)
+            
+            st.subheader('Análisis del Portafolio', divider="red")
+            temp_fig = px.line(valor_port_df, x=valor_port_df.index, y="Valor Portafolio")
+            temp_fig.update_traces(line_color="red")
+
+            backtesting_fig = make_subplots(
+                rows=2, cols=1,
+                shared_xaxes=True,
+                row_heights=[0.8, 0.2],
+                vertical_spacing=0.00
+            )
+
+            for trace in temp_fig.data:
+                backtesting_fig.add_trace(trace, row=1, col=1)
+
+            backtesting_fig.add_trace(
+                go.Scatter(
+                    x=drawdowns_df.index,
+                    y=drawdowns_df["Drawdown"],
+                    line=dict(color="white"),
+                    name="Drawdown",
+                    fill="tozeroy",
+                    fillcolor="rgba(255,255,255,0.2)",
+                    showlegend=True
+                ),
+                row=2, col=1
+            )
+
+            backtesting_fig.update_xaxes(showticklabels=False, row=1, col=1)
+            backtesting_fig.update_xaxes(
+                tickfont=dict(size=26), showline=True, linecolor="white", linewidth=2, gridcolor='rgba(255,255,255,0.2)', mirror=True
+            )
+            backtesting_fig.update_yaxes(
+                tickfont=dict(size=26), showline=True, linecolor="white", linewidth=2, gridcolor='rgba(255,255,255,0.2)', mirror=True
+            )
+            backtesting_fig.update_yaxes(tickformat=".0%", row=2, col=1)
+            backtesting_fig.update_layout(
+                margin=dict(t=50, b=35, l=70, r=2), plot_bgcolor="rgba(0,0,0,0)", height=800, title="Valor del Portafolio y Drawdown",
+                legend=dict(x=0.99, y=0.20, xanchor="right", yanchor="top", bgcolor="rgba(0,0,0,0)", font=dict(size=20, color="white"))
+            )
+            st.plotly_chart(backtesting_fig, theme=None)
+
+            cols = st.columns([0.4, 0.06, 0.18, 0.18, 0.18])
+
+            rendimientos_fig = px.histogram(rendimientos_port_df, x="Rendimiento Portafolio")
+            rendimientos_fig.update_traces(marker_line_width=2, marker_line_color="red", marker_color="rgba(255,0,0,0.2)")
+            rendimientos_fig.update_yaxes(
+                title=None, showticklabels=False, linecolor="white", linewidth=2, gridcolor='rgba(255,255,255,0.2)', mirror=True
+            )
+            rendimientos_fig.update_xaxes(
+                title=None, tickfont=dict(size=26), showline=True, linecolor="white", linewidth=2, gridcolor='rgba(255,255,255,0.2)', mirror=True
+            )
+            rendimientos_fig.update_layout(
+                margin=dict(t=50, b=35, l=70, r=2), plot_bgcolor="rgba(0,0,0,0)", title="Rendimientos Diarios Portafolio", height=525
+            )
+
+            cols[0].markdown("######")
+            cols[0].plotly_chart(rendimientos_fig, theme=None)
+
+            metricas_portafolio_dict = {}
+
+            rendimientos_vs_sp500_df = pd.merge(rendimientos_port_df, rendimientos_sp500_df, left_index=True, right_index=True, how="left")
+            X = rendimientos_vs_sp500_df[["SP500"]].values
+            y = rendimientos_vs_sp500_df["Rendimiento Portafolio"]
+            reg = LinearRegression().fit(X, y)
+
+            metricas_portafolio_dict["BETA"] = reg.coef_
+            metricas_portafolio_dict["Media"] = rendimientos_port_df["Rendimiento Portafolio"].mean()
+            metricas_portafolio_dict["Volatilidad"] = rendimientos_port_df["Rendimiento Portafolio"].std()
+            metricas_portafolio_dict["Max Drawdown"] = drawdowns_df["Drawdown"].max()
+            metricas_portafolio_dict["Kurtosis"] = rendimientos_port_df["Rendimiento Portafolio"].kurtosis()
+            metricas_portafolio_dict["Sesgo"] = rendimientos_port_df["Rendimiento Portafolio"].skew()
+            metricas_portafolio_dict["VaR_95"] = rendimientos_port_df["Rendimiento Portafolio"].quantile(0.05)
+            metricas_portafolio_dict["cVaR_95"] = rendimientos_port_df["Rendimiento Portafolio"][rendimientos_port_df["Rendimiento Portafolio"] <= \
+                                                metricas_portafolio_dict["VaR_95"]].mean()
+            metricas_portafolio_dict["Sharpe"] = metricas_portafolio_dict["Media"]/metricas_portafolio_dict["Volatilidad"]
+            metricas_portafolio_dict["Sortino"] = metricas_portafolio_dict["Media"] / \
+                                                rendimientos_port_df["Rendimiento Portafolio"][rendimientos_port_df["Rendimiento Portafolio"] <= 0].std()
+
+            for i in range(2, 5):
+                if i != 3:
+                    cols[i].markdown('#')
+                    cols[i].markdown('##')
+                    cols[i].markdown("#")
+                else:
+                    cols[i].markdown("#")
+                    cols[i].metric("BETA", np.round(metricas_portafolio_dict["BETA"], decimals=2), border=True, width="content")
+                    cols[i].markdown("######")
+
+            for i, key in enumerate(metricas_portafolio_dict):
+                if key != "BETA":
+                    cols[(i - 1) % 3 + 2].metric(key, np.round(metricas_portafolio_dict[key], decimals=4))
 
 
 
